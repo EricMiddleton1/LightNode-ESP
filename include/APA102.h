@@ -4,6 +4,7 @@
 #define APA102_ERR_OK		(0)
 #define APA102_ERR_NULL	(-1)
 #define APA102_ERR_ID		(-2)
+#define APA102_ERR_MEM	(-3)
 
 
 typedef union APA102_Frame {

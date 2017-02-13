@@ -33,6 +33,7 @@
 #define SEND_PORT			(54924)
 
 #define ALIVE_TIMER_RATE	(1000)
+#define WATCHDOG_TIMER_TIMEOUT	(2000)
 #define LED_COUNT	(71)
 
 
@@ -41,9 +42,13 @@ static void station_init();
 static void wifi_handler(System_Event_t *event);
 static void task_handler(os_event_t *event);
 
+static int __addrIsEqual(struct espconn*, struct espconn*);
+
 static void __recvHandler(void *arg, char *data, unsigned short len);
 static void __sendHandler(void *arg);
 static void aliveTimerHandler(void *arg);
+static void watchdogTimerHandler(void *arg);
+static void __feedWatchdog();
 
 static os_event_t _taskQueue[TASK_QUEUE_SIZE];
 static struct espconn _udpConn;
@@ -54,8 +59,8 @@ enum {
 	DISCONNECTED = 0,
 	CONNECTED
 } _state;
-os_timer_t _aliveTimer;
-struct espconn _sendConn;
+os_timer_t _aliveTimer, _watchdogTimer;
+struct espconn _clientConn;
 
 #define TYPE_PING		0
 #define TYPE_INIT		1
@@ -69,6 +74,13 @@ struct espconn _sendConn;
 #define LIGHT_NODE_TYPE		1
 
 
+int __addrIsEqual(struct espconn *conn1, struct espconn *conn2) {
+	return (conn1->proto.udp->remote_ip[3] == conn2->proto.udp->remote_ip[3]) &&
+		(conn1->proto.udp->remote_ip[2] == conn2->proto.udp->remote_ip[2]) &&
+		(conn1->proto.udp->remote_ip[1] == conn2->proto.udp->remote_ip[1]) &&
+		(conn1->proto.udp->remote_ip[0] == conn2->proto.udp->remote_ip[0]);
+}
+
 void task_handler(os_event_t *event) {
 	switch(event->sig) {
 		case TASK_MSG_REFRESH:
@@ -81,10 +93,15 @@ void task_handler(os_event_t *event) {
 	}
 }
 
+void __feedWatchdog() {
+	os_timer_disarm(&_watchdogTimer);
+	os_timer_arm(&_watchdogTimer, WATCHDOG_TIMER_TIMEOUT, 0);
+}
+
 void aliveTimerHandler(void *arg) {
 	uint8 dgram[3] = {0xAA, 0x55, TYPE_ALIVE};
 
-	sint8 err = espconn_sent(&_sendConn, dgram, sizeof(dgram));
+	sint8 err = espconn_sent(&_clientConn, dgram, sizeof(dgram));
 
 	if(err != 0) {
 		char msg[128];
@@ -96,6 +113,15 @@ void aliveTimerHandler(void *arg) {
 	}
 }
 
+void watchdogTimerHandler(void *arg) {
+	//Watchdog not fed in time, disconnect
+	_state = DISCONNECTED;
+	espconn_delete(&_clientConn);
+	os_timer_disarm(&_aliveTimer);
+
+	uart_debugSend("[watchdogTimerHandler] Client timed out\r\n");
+}
+
 void __recvHandler(void *arg, char *data, unsigned short len) {
 	if(len < 3 || data[0] != 0xAA || data[1] != 0x55) {
 		uart_debugSend("[__recvHandler] Received invalid datagram\r\n");
@@ -103,11 +129,24 @@ void __recvHandler(void *arg, char *data, unsigned short len) {
 		return;
 	}
 
-	char msg[128];
-	os_sprintf(msg, "[__recvHandler] Received message of type %d\r\n", data[2]);
-	uart_debugSend(msg);
-	
+	int inBand = 0;
+
 	struct espconn *pConn = (struct espconn*)arg;
+	remot_info *pRemote = NULL;
+	if(espconn_get_connection_info(pConn, &pRemote, 0) == ESPCONN_OK) {
+		pConn->proto.udp->remote_ip[0] = pRemote->remote_ip[0];
+		pConn->proto.udp->remote_ip[1] = pRemote->remote_ip[1];
+		pConn->proto.udp->remote_ip[2] = pRemote->remote_ip[2];
+		pConn->proto.udp->remote_ip[3] = pRemote->remote_ip[3];
+		pConn->proto.udp->remote_port = SEND_PORT;
+
+		if(_state == CONNECTED && __addrIsEqual(pConn, &_clientConn))
+			inBand = 1;
+	}
+
+	if(inBand) {
+		__feedWatchdog();
+	}
 
 	static uint8 replyData[6] = {0xAA, 0x55};
 	uint8 replyLen = 2;
@@ -126,32 +165,34 @@ void __recvHandler(void *arg, char *data, unsigned short len) {
 				replyData[2] = TYPE_NACK;
 				replyLen = 3;
 
-				uart_debugSend("[__recvHandler] Info received, already connected\r\n");
+				uart_debugSend("[__recvHandler] Init received, already connected\r\n");
 			}
 			else {
 				_state = CONNECTED;
 				
-				os_memcpy(_sendConn.proto.udp->remote_ip, pConn->proto.udp->remote_ip, 4);
-				_sendConn.proto.udp->remote_port = SEND_PORT;
+				os_memcpy(_clientConn.proto.udp->remote_ip, pConn->proto.udp->remote_ip, 4);
+				_clientConn.proto.udp->remote_port = SEND_PORT;
 
-				espconn_create(&_sendConn);
+				espconn_create(&_clientConn);
 
 				//Start alive timer
 				os_timer_arm(&_aliveTimer, ALIVE_TIMER_RATE, 1);
 
-				replyData[2] = TYPE_INFO;
-				replyData[3] = LIGHT_NODE_TYPE;
-				replyData[4] = LED_COUNT >> 8;
-				replyData[5] = LED_COUNT & 0xFF;
-				replyLen = 6;
+				//Start watchdog timer
+				os_timer_arm(&_watchdogTimer, WATCHDOG_TIMER_TIMEOUT, 0);
 
-				uart_debugSend("[__recvHandler] Info received, now connected\r\n");
+				replyData[2] = TYPE_INFO;
+				//replyData[3] = LIGHT_NODE_TYPE;
+				replyData[3] = LED_COUNT >> 8;
+				replyData[4] = LED_COUNT & 0xFF;
+				replyLen = 5;
+
+				uart_debugSend("[__recvHandler] Init received, now connected\r\n");
 			}
 		break;
 
 		case TYPE_UPDATE:
-			//Contains LED update data
-			if(len != (3*LED_COUNT + 3)) {
+			if(!inBand || (len != (3*LED_COUNT + 3))) {
 				replyData[2] = TYPE_NACK;
 				replyLen = 3;
 			}
@@ -176,25 +217,13 @@ void __recvHandler(void *arg, char *data, unsigned short len) {
 	}
 
 	if(replyLen > 2) {
-		remot_info *pRemote = NULL;
-		if(espconn_get_connection_info(pConn, &pRemote, 0) == ESPCONN_OK) {
-			pConn->proto.udp->remote_port = pRemote->remote_port;
-			os_memcpy(pConn->proto.udp->remote_ip, pRemote->remote_ip);
+		//Send datagram reponse
+		sint8 err = espconn_sent(pConn, replyData, replyLen);
 
-			//Send datagram reponse
-			sint8 err = espconn_sent(pConn, replyData, replyLen);
-
-			if(err != 0) {
-				char msg[128];
-				os_sprintf(msg, "[__recvHandler] Error sending: %d\r\n", (int)err);
-				uart_debugSend(msg);
-			}
-			else {
-				uart_debugSend("[__recvHandler] Sent response\r\n");
-			}
-		}
-		else {
-			uart_debugSend("[__recvHandler] Error getting connection info\r\n");
+		if(err != 0) {
+			char msg[128];
+			os_sprintf(msg, "[__recvHandler] Error sending: %d\r\n", (int)err);
+			uart_debugSend(msg);
 		}
 	}
 }
@@ -305,7 +334,7 @@ user_init()
 
 		//Initialize WiFi
 		//station_init();
-		ap_init();
+		//ap_init();
 
 		//Initialize UDP socket
 		_udpConn.type = ESPCONN_UDP;
@@ -316,13 +345,17 @@ user_init()
 		espconn_regist_recvcb(&_udpConn, __recvHandler);
 		espconn_regist_sentcb(&_udpConn, __sendHandler);
 
-		_sendConn.type = ESPCONN_UDP;
-		_udpConn.state = ESPCONN_NONE;
-		_udpConn.proto.udp = (esp_udp*)os_malloc(sizeof(esp_udp));
+		_clientConn.type = ESPCONN_UDP;
+		_clientConn.state = ESPCONN_NONE;
+		_clientConn.proto.udp = (esp_udp*)os_malloc(sizeof(esp_udp));
 
-		//Start periodic light update timer
+		//Configure alive timer
 		os_timer_disarm(&_aliveTimer);
 		os_timer_setfn(&_aliveTimer, (os_timer_func_t*)aliveTimerHandler, NULL);
+
+		//Configure watchdog timer
+		os_timer_disarm(&_watchdogTimer);
+		os_timer_setfn(&_watchdogTimer, (os_timer_func_t*)watchdogTimerHandler, NULL);
 
     //Start os task
     system_os_task(task_handler, TASK_PRIORITY, _taskQueue, TASK_QUEUE_SIZE);

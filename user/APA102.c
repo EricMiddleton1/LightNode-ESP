@@ -2,16 +2,32 @@
 #include "driver/SoftSPI.h"
 
 #include <mem.h>
+#include <math.h>
 
 #define NULL	(0)
+
+#define GAMMA		(2.3f)
 
 //NOTE: xtensa architecture is big endian!
 #define RAW_HEADER_VALUE	0x000000FF
 
 static uint32_t __ledToFrameCount(uint32_t ledCount);
+static uint8_t *__gammaTable = NULL;
 
 int APA102_init() {
 	SoftSPI_init();
+
+	if(__gammaTable == NULL) {
+		__gammaTable = (uint8_t*)os_malloc(256);
+		if(__gammaTable == NULL) {
+			return APA102_ERR_MEM;
+		}
+
+		unsigned int i;
+		for(i = 0; i < 256; ++i) {
+			__gammaTable[i] = pow((float)i / 255.f, GAMMA) * 255.f + 0.5;
+		}
+	}
 
 	return APA102_ERR_OK;
 }
@@ -79,9 +95,9 @@ int APA102_setAll(APA102_Strip *strip, uint8_t r, uint8_t g, uint8_t b) {
 	uint32_t i;
 	for(i = 1; i <= strip->ledCount; ++i) {
 		APA102_Frame *frame = strip->frames + i;
-		frame->fields.red = r;
-		frame->fields.green = g;
-		frame->fields.blue = b;
+		frame->fields.red = __gammaTable[r];
+		frame->fields.green = __gammaTable[g];
+		frame->fields.blue = __gammaTable[b];
 	}
 
 	return APA102_ERR_OK;
@@ -98,9 +114,9 @@ int APA102_setColor(APA102_Strip *strip, uint32_t id, uint8_t r, uint8_t g, uint
 
 	APA102_Frame *frame = strip->frames + id + 1;
 
-	frame->fields.red = r;
-	frame->fields.green = g;
-	frame->fields.blue = b;
+	frame->fields.red = __gammaTable[r];
+	frame->fields.green = __gammaTable[g];
+	frame->fields.blue = __gammaTable[b];
 
 	return APA102_ERR_OK;
 }
