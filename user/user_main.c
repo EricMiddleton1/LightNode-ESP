@@ -176,16 +176,25 @@ void __recvHandler(void *arg, char *data, unsigned short len) {
 	}
 
 	if(replyLen > 2) {
-		//Send datagram reponse
-		sint8 err = espconn_sent(pConn, replyData, replyLen);
+		remot_info *pRemote = NULL;
+		if(espconn_get_connection_info(pConn, &pRemote, 0) == ESPCONN_OK) {
+			pConn->proto.udp->remote_port = pRemote->remote_port;
+			os_memcpy(pConn->proto.udp->remote_ip, pRemote->remote_ip);
 
-		if(err != 0) {
-			char msg[128];
-			os_sprintf(msg, "[__recvHandler] Error sending: %d\r\n", (int)err);
-			uart_debugSend(msg);
+			//Send datagram reponse
+			sint8 err = espconn_sent(pConn, replyData, replyLen);
+
+			if(err != 0) {
+				char msg[128];
+				os_sprintf(msg, "[__recvHandler] Error sending: %d\r\n", (int)err);
+				uart_debugSend(msg);
+			}
+			else {
+				uart_debugSend("[__recvHandler] Sent response\r\n");
+			}
 		}
 		else {
-			uart_debugSend("[__recvHandler] Sent response\r\n");
+			uart_debugSend("[__recvHandler] Error getting connection info\r\n");
 		}
 	}
 }
