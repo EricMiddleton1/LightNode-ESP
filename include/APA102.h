@@ -33,8 +33,7 @@ int APA102_free(APA102_Strip *strip);
 int APA102_clear(APA102_Strip *strip);
 
 int APA102_setAll(APA102_Strip *strip, uint8_t r, uint8_t g, uint8_t b);
-int APA102_setColor(APA102_Strip *strip, uint32_t id, uint8_t r, uint8_t g, uint8_t b);
-
-int APA102_getColor(const APA102_Strip *strip, uint32_t id, uint8_t *r, uint8_t *g, uint8_t *b);
+int APA102_setColor(APA102_Strip *strip, uint32_t id,
+	uint8_t r, uint8_t g, uint8_t b);
 
 int APA102_display(const APA102_Strip *strip);
