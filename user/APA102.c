@@ -8,7 +8,7 @@
 #include <math.h>
 
 #define GAMMA		(2.3f)
-#define GAMMA_MAX	(8192.f)
+#define GAMMA_MAX	(8191.f)
 
 //NOTE: xtensa architecture is big endian!
 #define RAW_HEADER_VALUE	0x000000FF
@@ -102,12 +102,6 @@ int APA102_setAll(APA102_Strip *strip, uint8_t r, uint8_t g, uint8_t b) {
 
 	uint32_t i;
 	for(i = 1; i <= strip->ledCount; ++i) {
-		/*
-		APA102_Frame *frame = strip->frames + i;
-		frame->fields.red = __gammaTable[r];
-		frame->fields.green = __gammaTable[g];
-		frame->fields.blue = __gammaTable[b];
-		*/
 		__setFrameColor(strip->frames+i, r, g, b);
 	}
 
@@ -123,13 +117,6 @@ int APA102_setColor(APA102_Strip *strip, uint32_t id, uint8_t r, uint8_t g, uint
 		return APA102_ERR_ID;
 	}
 
-/*
-	APA102_Frame *frame = strip->frames + id + 1;
-
-	frame->fields.red = __gammaTable[r];
-	frame->fields.green = __gammaTable[g];
-	frame->fields.blue = __gammaTable[b];
-*/
 	__setFrameColor(strip->frames+id+1, r, g, b);
 
 	return APA102_ERR_OK;
@@ -173,33 +160,12 @@ static void __setFrameColor(APA102_Frame *frame,
 		return;
 	}
 
-	uint8_t brightness = 30*255/largest + 1;
+	//Use global LED brightness (5 bits) to extend color resolution
+	//at lower brightess settings
+	uint8_t brightness = ceil(31.f * largest / GAMMA_MAX);
 
-	uint16_t c;
-
-	c = (31 * gr / brightness) >> 5;
-	if(c > 255) {
-		uart_debugSend("Red > 255\r\n");
-
-		c = 255;
-	}
-	frame->fields.red = c;
-
-	c = (31 * gg / brightness) >> 5;
-	if(c > 255) {
-		uart_debugSend("Green > 255\r\n");
-
-		c = 255;
-	}
-	frame->fields.green = c;
-
-	c = (31 * gb / brightness) >> 5;
-	if(c > 255) {
-		uart_debugSend("Blue > 255\r\n");
-
-		c = 255;
-	}
-	frame->fields.blue = c;
-
-	frame->fields.globalBrightness = brightness;
+	frame->fields.red = (31 * gr / brightness) >> 5;
+	frame->fields.green = (31 * gg / brightness) >> 5;
+	frame->fields.blue = (31 * gb / brightness) >> 5;
+	frame->fields.brightness = brightness;
 }

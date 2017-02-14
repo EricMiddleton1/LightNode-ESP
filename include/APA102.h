@@ -9,8 +9,8 @@
 
 typedef union APA102_Frame {
 	struct {
+		uint32_t brightness : 5;
 		uint32_t header : 3;
-		uint32_t globalBrightness : 5;
 
 		uint32_t blue : 8;
 		uint32_t green : 8;
