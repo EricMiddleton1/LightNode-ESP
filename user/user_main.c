@@ -34,7 +34,7 @@
 
 #define ALIVE_TIMER_RATE	(1000)
 #define WATCHDOG_TIMER_TIMEOUT	(2000)
-#define LED_COUNT	(71)
+#define LED_COUNT	(49)
 
 
 static void ap_init();
@@ -62,13 +62,14 @@ enum {
 os_timer_t _aliveTimer, _watchdogTimer;
 struct espconn _clientConn;
 
-#define TYPE_PING		0
-#define TYPE_INIT		1
-#define TYPE_INFO		2
-#define TYPE_UPDATE	3
-#define TYPE_ALIVE	4
-#define TYPE_ACK		5
-#define TYPE_NACK		6
+#define TYPE_PING		0x00
+#define TYPE_INIT		0x01
+#define TYPE_INFO		0x02
+#define TYPE_UPDATE	0x03
+#define TYPE_ALIVE	0x04
+
+#define TYPE_ACK		0xFE
+#define TYPE_NACK		0xFF
 
 //Type of node (digital strip)
 #define LIGHT_NODE_TYPE		1
@@ -144,7 +145,7 @@ void __recvHandler(void *arg, char *data, unsigned short len) {
 			inBand = 1;
 	}
 
-	if(inBand) {
+	if(inBand && data[2] != TYPE_PING) {
 		__feedWatchdog();
 	}
 
@@ -153,9 +154,14 @@ void __recvHandler(void *arg, char *data, unsigned short len) {
 	
 	switch(data[2]) {
 		case TYPE_PING:
-			//Reply with ACK
-			replyData[2] = TYPE_ACK;
-			replyLen = 3;
+			if(_state != CONNECTED) {
+				//Reply with INFO
+				replyData[2] = TYPE_INFO;
+				replyData[3] = LIGHT_NODE_TYPE;
+				replyData[4] = LED_COUNT >> 8;
+				replyData[5] = LED_COUNT & 0xFF;
+				replyLen = 6;
+			}
 		break;
 
 		case TYPE_INIT:
@@ -181,11 +187,8 @@ void __recvHandler(void *arg, char *data, unsigned short len) {
 				//Start watchdog timer
 				os_timer_arm(&_watchdogTimer, WATCHDOG_TIMER_TIMEOUT, 0);
 
-				replyData[2] = TYPE_INFO;
-				//replyData[3] = LIGHT_NODE_TYPE;
-				replyData[3] = LED_COUNT >> 8;
-				replyData[4] = LED_COUNT & 0xFF;
-				replyLen = 5;
+				replyData[2] = TYPE_ACK;
+				replyLen = 3;
 
 				uart_debugSend("[__recvHandler] Init received, now connected\r\n");
 			}
@@ -195,6 +198,13 @@ void __recvHandler(void *arg, char *data, unsigned short len) {
 			if(!inBand || (len != (3*LED_COUNT + 3))) {
 				replyData[2] = TYPE_NACK;
 				replyLen = 3;
+				
+				if(!inBand) {
+					uart_debugSend("[__recvHandler] Update received from out of band packet\r\n");
+				}
+				else {
+					uart_debugSend("[__recvHandler] Update received with wrong payload size\r\n");
+				}
 			}
 			else {
 				uint32_t i;
@@ -229,7 +239,7 @@ void __recvHandler(void *arg, char *data, unsigned short len) {
 }
 
 void __sendHandler(void *arg) {
-	uart_debugSend("[__sendHandler]\r\n");
+	//uart_debugSend("[__sendHandler]\r\n");
 }
 
 void ap_init() {
