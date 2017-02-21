@@ -20,9 +20,6 @@
 #define AP_SSID	"LightNode"
 #define AP_PSK	"l1ghtn0de"
 
-#define STATION_SSID	""
-#define STATION_PSK		""
-
 #define AP_GATEWAY	"192.168.1.1"
 #define AP_NETMASK	"255.255.255.0"
 
@@ -34,11 +31,14 @@
 
 #define ALIVE_TIMER_RATE	(1000)
 #define WATCHDOG_TIMER_TIMEOUT	(2000)
-#define LED_COUNT	(49)
+#define CONNECT_TIMER_TIMEOUT	(20000)
+#define WIDTH	(7)
+#define HEIGHT	(7)
+#define LED_COUNT	71
 
 
-static void ap_init();
-static void station_init();
+static void ap_init(char *ssid, char *psk);
+static void station_connect(char *ssid, char *psk);
 static void wifi_handler(System_Event_t *event);
 static void task_handler(os_event_t *event);
 
@@ -48,6 +48,7 @@ static void __recvHandler(void *arg, char *data, unsigned short len);
 static void __sendHandler(void *arg);
 static void aliveTimerHandler(void *arg);
 static void watchdogTimerHandler(void *arg);
+static void connectTimerHandler(void *arg);
 static void __feedWatchdog();
 
 static os_event_t _taskQueue[TASK_QUEUE_SIZE];
@@ -59,7 +60,7 @@ enum {
 	DISCONNECTED = 0,
 	CONNECTED
 } _state;
-os_timer_t _aliveTimer, _watchdogTimer;
+os_timer_t _aliveTimer, _watchdogTimer, _connectTimer;
 struct espconn _clientConn;
 
 #define TYPE_PING		0x00
@@ -68,10 +69,13 @@ struct espconn _clientConn;
 #define TYPE_UPDATE	0x03
 #define TYPE_ALIVE	0x04
 
+#define TYPE_WIFI_CONNECT	0x14
+#define TYPE_WIFI_START_AP	0x15
+
 #define TYPE_ACK		0xFE
 #define TYPE_NACK		0xFF
 
-//Type of node (digital strip)
+//Type of node (Digital Strip)
 #define LIGHT_NODE_TYPE		1
 
 
@@ -123,6 +127,45 @@ void watchdogTimerHandler(void *arg) {
 	uart_debugSend("[watchdogTimerHandler] Client timed out\r\n");
 }
 
+void connectTimerHandler(void *arg) {
+	int opmode = wifi_get_opmode();
+	
+	if(opmode != SOFTAP_MODE) {
+		uart_debugSend("[connectTimerHandler] ");
+
+		switch(wifi_station_get_connect_status()) {
+			case STATION_IDLE:
+				uart_debugSend("Station idle\r\n");
+			break;
+
+			case STATION_CONNECTING:
+				uart_debugSend("Station connecting\r\n");
+			break;
+
+			case STATION_WRONG_PASSWORD:
+				uart_debugSend("Station wrong password\r\n");
+			break;
+
+			case STATION_NO_AP_FOUND:
+				uart_debugSend("Station no AP found\r\n");
+			break;
+
+			case STATION_CONNECT_FAIL:
+				uart_debugSend("Station connect fail\r\n");
+			break;
+
+			case STATION_GOT_IP:
+				uart_debugSend("Station got IP\r\n");
+			break;
+
+			default:
+				uart_debugSend("Unknown station state\r\n");
+		}
+
+		ap_init(NULL, NULL);
+	}
+}
+
 void __recvHandler(void *arg, char *data, unsigned short len) {
 	if(len < 3 || data[0] != 0xAA || data[1] != 0x55) {
 		uart_debugSend("[__recvHandler] Received invalid datagram\r\n");
@@ -158,6 +201,8 @@ void __recvHandler(void *arg, char *data, unsigned short len) {
 				//Reply with INFO
 				replyData[2] = TYPE_INFO;
 				replyData[3] = LIGHT_NODE_TYPE;
+				//replyData[4] = WIDTH;
+				//replyData[5] = HEIGHT;
 				replyData[4] = LED_COUNT >> 8;
 				replyData[5] = LED_COUNT & 0xFF;
 				replyLen = 6;
@@ -169,7 +214,8 @@ void __recvHandler(void *arg, char *data, unsigned short len) {
 			//Else, connect to sender, reply with INFO
 			if(_state == CONNECTED) {
 				replyData[2] = TYPE_NACK;
-				replyLen = 3;
+				replyData[3] = data[2];
+				replyLen = 4;
 
 				uart_debugSend("[__recvHandler] Init received, already connected\r\n");
 			}
@@ -188,7 +234,8 @@ void __recvHandler(void *arg, char *data, unsigned short len) {
 				os_timer_arm(&_watchdogTimer, WATCHDOG_TIMER_TIMEOUT, 0);
 
 				replyData[2] = TYPE_ACK;
-				replyLen = 3;
+				replyData[3] = data[2];
+				replyLen = 4;
 
 				uart_debugSend("[__recvHandler] Init received, now connected\r\n");
 			}
@@ -197,7 +244,8 @@ void __recvHandler(void *arg, char *data, unsigned short len) {
 		case TYPE_UPDATE:
 			if(!inBand || (len != (3*LED_COUNT + 3))) {
 				replyData[2] = TYPE_NACK;
-				replyLen = 3;
+				replyData[3] = data[2];
+				replyLen = 4;
 				
 				if(!inBand) {
 					uart_debugSend("[__recvHandler] Update received from out of band packet\r\n");
@@ -221,6 +269,42 @@ void __recvHandler(void *arg, char *data, unsigned short len) {
 			//Feed "watchdog"
 		break;
 
+		case TYPE_WIFI_CONNECT: {
+			char *ssid = NULL, *psk = NULL;
+			int ssidLen = 0;
+			
+			ssid = data + 3;
+			ssidLen = os_strlen(ssid);
+			psk = ssid + ssidLen + 1;
+
+			uart_debugSend("[__recvHandler] WiFi Connect to station: ");
+			uart_debugSend(ssid);
+			uart_debugSend(" with psk ");
+			uart_debugSend(psk);
+			uart_debugSend("\r\n");
+
+			station_connect(ssid, psk);
+		}
+		break;
+
+		case TYPE_WIFI_START_AP: {
+			char *ssid = NULL, *psk = NULL;
+			int ssidLen = 0;
+			
+			ssid = data + 3;
+			ssidLen = os_strlen(ssid);
+			psk = ssid + ssidLen + 1;
+
+			uart_debugSend("[__recvHandler] WiFi start AP: ");
+			uart_debugSend(ssid);
+			uart_debugSend(" with psk ");
+			uart_debugSend(psk);
+			uart_debugSend("\r\n");
+
+			ap_init(ssid, psk);
+		}
+		break;
+
 		default:
 			//Do nothing (eventually, send NACK)
 		break;
@@ -242,28 +326,26 @@ void __sendHandler(void *arg) {
 	//uart_debugSend("[__sendHandler]\r\n");
 }
 
-void ap_init() {
+void ap_init(char *ssid, char *psk) {
 	//Set to SoftAP mode
 	wifi_set_opmode(SOFTAP_MODE);
 
-	//SoftAP configuration
-	struct softap_config apConfig = {
-		.channel = AP_CHANNEL,
-		.authmode = AUTH_WPA2_PSK,
-		.ssid_hidden = 0,
-		.max_connection = AP_MAX_CONNECTIONS,
-		.beacon_interval = 100
-	};
-	strcpy(apConfig.ssid, AP_SSID);
-	strcpy(apConfig.password, AP_PSK);
-	apConfig.ssid_len = strlen(AP_SSID);
+	if(ssid != NULL && psk != NULL) {
+		//SoftAP configuration
+		struct softap_config apConfig = {
+			.channel = AP_CHANNEL,
+			.authmode = AUTH_WPA2_PSK,
+			.ssid_hidden = 0,
+			.max_connection = AP_MAX_CONNECTIONS,
+			.beacon_interval = 100
+		};
+		strcpy(apConfig.ssid, ssid);
+		strcpy(apConfig.password, psk);
+		apConfig.ssid_len = strlen(ssid);
 
-	//Set configuration
-	wifi_softap_set_config(&apConfig);
-
-	//Disable power saving mode
-	//This seems to help reduce jitter in latency
-	//wifi_set_sleep_type(NONE_SLEEP_T);
+		//Set configuration
+		wifi_softap_set_config(&apConfig);
+	}
 
 	//DHCP configuration
 	struct dhcps_lease dhcpLease = {
@@ -286,20 +368,29 @@ void ap_init() {
 	//Restart DHCP server
 	wifi_softap_dhcps_start();
 
-	//Set WiFi event handler
-	wifi_set_event_handler_cb(&wifi_handler);
 }
 
-void station_init() {
-	//Set to station mode
-	wifi_set_opmode(STATION_MODE);
+void station_connect(char *ssid, char *psk) {
+
+	if(wifi_get_opmode() != STATION_MODE) {
+		//Set to station mode
+		wifi_set_opmode(STATION_MODE);
+	}
+
+	if(wifi_station_get_connect_status() == STATION_GOT_IP) {
+		wifi_station_disconnect();
+	}
 
 	//Station configuration
 	struct station_config sConfig;
 	sConfig.bssid_set = 0;
-	os_memcpy(&sConfig.ssid, STATION_SSID, strlen(STATION_SSID) + 1);
-	os_memcpy(&sConfig.password, STATION_PSK, strlen(STATION_PSK) + 1);
+	os_memcpy(&sConfig.ssid, ssid, strlen(ssid) + 1);
+	os_memcpy(&sConfig.password, psk, strlen(psk) + 1);
 	wifi_station_set_config(&sConfig);
+
+	wifi_station_connect();
+
+	os_timer_arm(&_connectTimer, CONNECT_TIMER_TIMEOUT, 0);
 }
 
 
@@ -314,6 +405,18 @@ void wifi_handler(System_Event_t *event) {
 			//TODO: Maybe do something here?
 		break;
 
+		case EVENT_STAMODE_GOT_IP:
+			uart_debugSend("[wifi_handler] Station mode received IP\r\n");
+			//Cancel connect timer
+			os_timer_disarm(&_connectTimer);
+		break;
+
+		case EVENT_STAMODE_DISCONNECTED:
+			uart_debugSend("[wifi_handler] Station mode disconnected\r\n");
+			//Start connect timer
+			os_timer_arm(&_connectTimer, CONNECT_TIMER_TIMEOUT, 0);
+		break;
+
 		default:
 			break;
 	}
@@ -325,27 +428,13 @@ user_init()
 {
 		uart_init(115200, 115200);
 		
-		APA102_init();
-
-		_strip = APA102_alloc(LED_COUNT);
-		APA102_display(_strip);
-
-    //Remove debug statements from UART0
+		//Remove debug statements from UART0
     system_set_os_print(0);
 		
-		// Initialize the GPIO subsystem.
-    //gpio_init();
-
-    //Set GPIO2 to output mode
-    //PIN_FUNC_SELECT(PERIPHS_IO_MUX_GPIO2_U, FUNC_GPIO2);
-
-    //Set GPIO2 low
-    //gpio_output_set(0, BIT0, BIT0, 0);
-
-		//Initialize WiFi
-		//station_init();
-		//ap_init();
-
+		APA102_init();
+		_strip = APA102_alloc(LED_COUNT);
+		APA102_display(_strip);
+		
 		//Initialize UDP socket
 		_udpConn.type = ESPCONN_UDP;
 		_udpConn.state = ESPCONN_NONE;
@@ -366,6 +455,23 @@ user_init()
 		//Configure watchdog timer
 		os_timer_disarm(&_watchdogTimer);
 		os_timer_setfn(&_watchdogTimer, (os_timer_func_t*)watchdogTimerHandler, NULL);
+
+		//Configure connect timer
+		os_timer_disarm(&_connectTimer);
+		os_timer_setfn(&_connectTimer, (os_timer_func_t*)connectTimerHandler, NULL);
+
+		int opmode = wifi_get_opmode();
+		if(opmode == STATION_MODE) {
+			//Start connect timer
+			os_timer_arm(&_connectTimer, CONNECT_TIMER_TIMEOUT, 0);
+		}
+		else if(opmode != SOFTAP_MODE) {
+			//Start AP mode
+			ap_init(NULL, NULL);
+		}
+
+		//Set WiFi event handler
+		wifi_set_event_handler_cb(&wifi_handler);
 
     //Start os task
     system_os_task(task_handler, TASK_PRIORITY, _taskQueue, TASK_QUEUE_SIZE);
