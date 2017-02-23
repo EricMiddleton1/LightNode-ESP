@@ -32,9 +32,9 @@
 #define ALIVE_TIMER_RATE	(1000)
 #define WATCHDOG_TIMER_TIMEOUT	(2000)
 #define CONNECT_TIMER_TIMEOUT	(20000)
-#define WIDTH	(7)
-#define HEIGHT	(7)
-#define LED_COUNT	71
+#define WIDTH	7
+#define HEIGHT	7
+#define LED_COUNT	(WIDTH*HEIGHT)//71
 
 
 static void ap_init(char *ssid, char *psk);
@@ -62,6 +62,7 @@ enum {
 } _state;
 os_timer_t _aliveTimer, _watchdogTimer, _connectTimer;
 struct espconn _clientConn;
+int connecting;
 
 #define TYPE_PING		0x00
 #define TYPE_INIT		0x01
@@ -76,8 +77,8 @@ struct espconn _clientConn;
 #define TYPE_NACK		0xFF
 
 //Type of node (Digital Strip)
-#define LIGHT_NODE_TYPE		1
-
+//#define LIGHT_NODE_TYPE		1
+#define LIGHT_NODE_TYPE	2
 
 int __addrIsEqual(struct espconn *conn1, struct espconn *conn2) {
 	return (conn1->proto.udp->remote_ip[3] == conn2->proto.udp->remote_ip[3]) &&
@@ -164,6 +165,8 @@ void connectTimerHandler(void *arg) {
 
 		ap_init(NULL, NULL);
 	}
+
+	connecting = 0;
 }
 
 void __recvHandler(void *arg, char *data, unsigned short len) {
@@ -201,10 +204,10 @@ void __recvHandler(void *arg, char *data, unsigned short len) {
 				//Reply with INFO
 				replyData[2] = TYPE_INFO;
 				replyData[3] = LIGHT_NODE_TYPE;
-				//replyData[4] = WIDTH;
-				//replyData[5] = HEIGHT;
-				replyData[4] = LED_COUNT >> 8;
-				replyData[5] = LED_COUNT & 0xFF;
+				replyData[4] = WIDTH;
+				replyData[5] = HEIGHT;
+				//replyData[4] = LED_COUNT >> 8;
+				//replyData[5] = LED_COUNT & 0xFF;
 				replyLen = 6;
 			}
 		break;
@@ -391,6 +394,8 @@ void station_connect(char *ssid, char *psk) {
 	wifi_station_connect();
 
 	os_timer_arm(&_connectTimer, CONNECT_TIMER_TIMEOUT, 0);
+
+	connecting = 1;
 }
 
 
@@ -409,12 +414,15 @@ void wifi_handler(System_Event_t *event) {
 			uart_debugSend("[wifi_handler] Station mode received IP\r\n");
 			//Cancel connect timer
 			os_timer_disarm(&_connectTimer);
+			connecting = 0;
 		break;
 
 		case EVENT_STAMODE_DISCONNECTED:
 			uart_debugSend("[wifi_handler] Station mode disconnected\r\n");
 			//Start connect timer
-			os_timer_arm(&_connectTimer, CONNECT_TIMER_TIMEOUT, 0);
+			if(!connecting) {
+				station_connect(NULL, NULL);
+			}
 		break;
 
 		default:
@@ -464,10 +472,12 @@ user_init()
 		if(opmode == STATION_MODE) {
 			//Start connect timer
 			os_timer_arm(&_connectTimer, CONNECT_TIMER_TIMEOUT, 0);
+			connecting = 1;
 		}
 		else if(opmode != SOFTAP_MODE) {
 			//Start AP mode
 			ap_init(NULL, NULL);
+			connecting = 0;
 		}
 
 		//Set WiFi event handler
