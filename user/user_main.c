@@ -34,7 +34,8 @@
 #define CONNECT_TIMER_TIMEOUT	(20000)
 #define WIDTH	7
 #define HEIGHT	7
-#define LED_COUNT	(WIDTH*HEIGHT)//71
+#define LED_COUNT	9
+#define NAME		"LightNode-Nameplate"
 
 
 static void ap_init(char *ssid, char *psk);
@@ -195,7 +196,7 @@ void __recvHandler(void *arg, char *data, unsigned short len) {
 		__feedWatchdog();
 	}
 
-	static uint8 replyData[6] = {0xAA, 0x55};
+	uint8 replyData[32] = {0xAA, 0x55};
 	uint8 replyLen = 2;
 	
 	switch(data[2]) {
@@ -203,12 +204,13 @@ void __recvHandler(void *arg, char *data, unsigned short len) {
 			if(_state != CONNECTED) {
 				//Reply with INFO
 				replyData[2] = TYPE_INFO;
-				replyData[3] = LIGHT_NODE_TYPE;
-				replyData[4] = WIDTH;
-				replyData[5] = HEIGHT;
-				//replyData[4] = LED_COUNT >> 8;
-				//replyData[5] = LED_COUNT & 0xFF;
-				replyLen = 6;
+				replyData[3] = 0;	//# Analog strips
+				replyData[4] = 1; //# Digital strips
+				replyData[5] = 0; //# Matricies
+				replyData[6] = LED_COUNT >> 8; //Led count
+				replyData[7] = LED_COUNT & 0xFF;
+				memcpy(replyData+8, NAME, strlen(NAME)); //Name
+				replyLen = 8 + strlen(NAME);
 			}
 		break;
 
@@ -245,7 +247,7 @@ void __recvHandler(void *arg, char *data, unsigned short len) {
 		break;
 
 		case TYPE_UPDATE:
-			if(!inBand || (len != (3*LED_COUNT + 3))) {
+			if(!inBand || (len != (3*(LED_COUNT) + 3))) {
 				replyData[2] = TYPE_NACK;
 				replyData[3] = data[2];
 				replyLen = 4;
@@ -259,7 +261,7 @@ void __recvHandler(void *arg, char *data, unsigned short len) {
 			}
 			else {
 				uint32_t i;
-				for(i = 0; i < LED_COUNT; ++i) {
+				for(i = 0; i < (LED_COUNT); ++i) {
 					uint32_t index = 3*i + 3;
 					APA102_setColor(_strip, i, data[index], data[index+1], data[index+2]);
 				}
